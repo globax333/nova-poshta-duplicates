@@ -1,0 +1,35 @@
+name: Nova Poshta Duplicates Check
+
+on:
+  schedule:
+    # Щодня о 18:00 за Києвом
+    # Зараз літній час (UTC+3) -> 18:00 Київ = 15:00 UTC
+    # Взимку (UTC+2) це відповідатиме 17:00 Київ - за потреби змініть на "0 16 * * *"
+    - cron: "0 15 * * *"
+  workflow_dispatch: # дозволяє запустити вручну кнопкою "Run workflow" на GitHub
+
+jobs:
+  check-duplicates:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run duplicate check
+        env:
+          NP_TOKEN: ${{ secrets.NP_TOKEN }}
+          NP_DEVICE_CODE: ${{ secrets.NP_DEVICE_CODE }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: node check-duplicates.js
+
+      - name: Upload HTML report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: duplicates-report
+          path: duplicates-report.html
