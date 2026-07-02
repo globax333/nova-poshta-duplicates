@@ -22,8 +22,9 @@ const CONFIG = {
   // DeviceCode з того ж запиту (Headers -> DeviceCode)
   deviceCode: process.env.NP_DEVICE_CODE || "ВАШ_DEVICE_CODE_СЮДИ",
 
-  // За скільки днів назад перевіряти (включаючи сьогодні)
-  daysBack: 3,
+  // За скільки днів назад перевіряти (2 = сьогодні + 2 попередні дні,
+  // тобто якщо сьогодні 02.07, перевіряються 30.06, 01.07, 02.07)
+  daysBack: 2,
 
   // Поріг "підозрілості" в годинах: якщо 2 накладні з однаковими
   // ознаками створені в межах цього інтервалу - вважаємо дублікатом
@@ -44,9 +45,10 @@ const CONFIG = {
 
 // ===================== ДОПОМІЖНІ ФУНКЦІЇ =====================
 
-function formatDateForApi(date) {
+function formatDateForApi(date, endOfDay = false) {
   const pad = (n) => String(n).padStart(2, "0");
-  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} 00:00:00`;
+  const time = endOfDay ? "23:59:59" : "00:00:00";
+  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} ${time}`;
 }
 
 function buildDateRange(daysBack) {
@@ -54,8 +56,11 @@ function buildDateRange(daysBack) {
   const from = new Date();
   from.setDate(from.getDate() - daysBack);
   return {
-    DateFrom: formatDateForApi(from),
-    DateTo: formatDateForApi(to),
+    // DateFrom - початок дня N днів тому
+    DateFrom: formatDateForApi(from, false),
+    // DateTo - КІНЕЦЬ сьогоднішнього дня (23:59:59),
+    // інакше API відсікає всі накладні, створені сьогодні після півночі
+    DateTo: formatDateForApi(to, true),
   };
 }
 
