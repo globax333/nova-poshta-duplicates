@@ -134,13 +134,12 @@ async function fetchAllOutgoingDocuments() {
 // ===================== ЛОГІКА ПОШУКУ ДУБЛІКАТІВ =====================
 
 function buildDuplicateKey(doc) {
-  // Ключ групування: телефон отримувача + вага + опис вантажу + місто
-  return [
-    doc.PhoneRecipient,
-    doc.DocumentWeight,
-    doc.CargoDescription,
-    doc.CityRecipientDescription,
-  ].join("|");
+  // Групуємо ТІЛЬКИ за телефоном отримувача - це головна, стабільна ознака.
+  // Вага/місто/опис вантажу можуть відрізнятись через людські помилки
+  // при введенні (одруківки, різне написання міста тощо), тому їх більше
+  // не використовуємо як умову для групування, а лише показуємо в звіті,
+  // щоб оператор сам оцінив схожість.
+  return doc.PhoneRecipient;
 }
 
 // Статуси, які означають "накладна вже неактивна" - їх не рахуємо
@@ -189,6 +188,15 @@ function findDuplicates(documents) {
           city: curr.CityRecipientDescription,
           cargo: curr.CargoDescription,
           weight: curr.DocumentWeight,
+          // Порівняння для наочності в звіті - НЕ впливає на те, чи пара
+          // потрапила в список (це вже вирішив сам факт групування за телефоном)
+          cityMatches:
+            prev.CityRecipientDescription === curr.CityRecipientDescription,
+          weightMatches: prev.DocumentWeight === curr.DocumentWeight,
+          cargoMatches: prev.CargoDescription === curr.CargoDescription,
+          prevCity: prev.CityRecipientDescription,
+          prevWeight: prev.DocumentWeight,
+          prevCargo: prev.CargoDescription,
           original: { number: prev.Number, dateTime: prev.DateTime },
           duplicate: { number: curr.Number, dateTime: curr.DateTime },
           hoursApart: Number(hoursDiff.toFixed(1)),
@@ -216,8 +224,19 @@ function printReport(duplicates, totalChecked) {
   duplicates.forEach((dup, i) => {
     console.log(`--- Дублікат #${i + 1} ---`);
     console.log(`Отримувач: ${dup.recipient} (${dup.phone})`);
-    console.log(`Місто: ${dup.city}`);
-    console.log(`Вантаж: ${dup.cargo}, вага: ${dup.weight} кг`);
+    console.log(
+      `Місто: ${dup.prevCity} → ${dup.city}${dup.cityMatches ? "" : "  ⚠️ РІЗНЕ"}`
+    );
+    console.log(
+      `Вага: ${dup.prevWeight} кг → ${dup.weight} кг${
+        dup.weightMatches ? "" : "  ⚠️ РІЗНА"
+      }`
+    );
+    console.log(
+      `Вантаж: ${dup.prevCargo} → ${dup.cargo}${
+        dup.cargoMatches ? "" : "  ⚠️ РІЗНИЙ"
+      }`
+    );
     console.log(
       `Оригінал:  №${dup.original.number}  (${dup.original.dateTime})`
     );
@@ -256,7 +275,26 @@ function buildTelegramMessage(duplicates, totalChecked) {
     msg += `<b>${i + 1}. ${escapeHtml(dup.recipient)}</b> (${escapeHtml(
       dup.phone
     )})\n`;
-    msg += `   ${escapeHtml(dup.city)}, ${escapeHtml(dup.cargo)}, ${dup.weight} кг\n`;
+
+    if (dup.cityMatches) {
+      msg += `   Місто: ${escapeHtml(dup.city)}\n`;
+    } else {
+      msg += `   Місто: ${escapeHtml(dup.prevCity)} → ${escapeHtml(
+        dup.city
+      )} ⚠️\n`;
+    }
+
+    if (dup.weightMatches) {
+      msg += `   Вага: ${dup.weight} кг`;
+    } else {
+      msg += `   Вага: ${dup.prevWeight} → ${dup.weight} кг ⚠️`;
+    }
+
+    if (!dup.cargoMatches) {
+      msg += ` | Вантаж різний ⚠️`;
+    }
+    msg += `\n`;
+
     msg += `   №${dup.original.number} → №${dup.duplicate.number} (різниця ${dup.hoursApart} год.)\n\n`;
   });
 
@@ -298,9 +336,27 @@ function generateHtmlReport(duplicates, totalChecked) {
         <td>${i + 1}</td>
         <td>${escapeHtml(dup.recipient)}</td>
         <td>${escapeHtml(dup.phone)}</td>
-        <td>${escapeHtml(dup.city)}</td>
-        <td>${escapeHtml(dup.cargo)}</td>
-        <td>${dup.weight}</td>
+        <td class="${dup.cityMatches ? "" : "mismatch"}">
+          ${
+            dup.cityMatches
+              ? escapeHtml(dup.city)
+              : `${escapeHtml(dup.prevCity)} → ${escapeHtml(dup.city)}`
+          }
+        </td>
+        <td class="${dup.cargoMatches ? "" : "mismatch"}">
+          ${
+            dup.cargoMatches
+              ? escapeHtml(dup.cargo)
+              : `${escapeHtml(dup.prevCargo)} → ${escapeHtml(dup.cargo)}`
+          }
+        </td>
+        <td class="${dup.weightMatches ? "" : "mismatch"}">
+          ${
+            dup.weightMatches
+              ? dup.weight
+              : `${dup.prevWeight} → ${dup.weight}`
+          }
+        </td>
         <td>№${dup.original.number}<br><small>${dup.original.dateTime}</small></td>
         <td>№${dup.duplicate.number}<br><small>${dup.duplicate.dateTime}</small></td>
         <td>${dup.hoursApart} год.</td>
@@ -323,6 +379,7 @@ function generateHtmlReport(duplicates, totalChecked) {
   th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #eee; font-size: 13px; }
   th { background: #fafafa; font-weight: 600; }
   tr.flagged { background: #fff4e5; }
+  td.mismatch { color: #b02a37; font-weight: 600; }
   small { color: #888; }
   .empty { padding: 40px; text-align: center; color: #4caf50; font-size: 18px; background: white; border-radius: 8px; }
 </style>
