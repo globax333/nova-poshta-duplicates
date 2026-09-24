@@ -81,6 +81,9 @@ async function fetchAllOutgoingDocuments() {
 
   while (true) {
     const useApiKey = Boolean(CONFIG.apiKey);
+    if (page === 1) {
+      console.log(`Авторизація: ${useApiKey ? "apiKey (NP_API_KEY)" : "token + DeviceCode (NP_TOKEN)"}`);
+    }
 
     const body = {
       ...(useApiKey ? { apiKey: CONFIG.apiKey } : {}),
@@ -120,8 +123,14 @@ async function fetchAllOutgoingDocuments() {
       const isAuthError =
         errText.includes("User is undefined") ||
         errText.includes("Користувач не визначений") ||
-        /api key/i.test(errText) ||
+        /api key|token/i.test(errText) ||
         response.status === 401;
+
+      if (!isAuthError && CONFIG.telegram.enabled) {
+        await sendTelegramMessage(
+          `🔴 <b>Помилка перевірки дублікатів</b>\n\nAPI Нової Пошти повернув помилку: ${escapeHtml(errText)}`
+        );
+      }
 
       if (isAuthError && CONFIG.telegram.enabled) {
         await sendTelegramMessage(
@@ -130,7 +139,8 @@ async function fetchAllOutgoingDocuments() {
           )}`
         );
       }
-      break;
+      // Зупиняємо весь запуск, щоб не надсилати хибний звіт "0 накладних, дублікатів немає"
+      throw new Error(`Помилка API Нової Пошти: ${errText}`);
     }
 
     const docs = json.data?.[0]?.result || [];
@@ -426,6 +436,15 @@ function generateHtmlReport(duplicates, totalChecked) {
 // ===================== ЗАПУСК =====================
 
 (async function main() {
+  try {
+    await run();
+  } catch (e) {
+    console.error(e.message);
+    process.exit(1);
+  }
+})();
+
+async function run() {
   console.log("Завантаження накладних...");
   const documents = await fetchAllOutgoingDocuments();
   console.log(`Отримано ${documents.length} накладних.`);
@@ -439,4 +458,4 @@ function generateHtmlReport(duplicates, totalChecked) {
     const message = buildTelegramMessage(duplicates, documents.length);
     await sendTelegramMessage(message);
   }
-})();
+}
