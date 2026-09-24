@@ -14,6 +14,13 @@ const fs = require("fs");
 // ===================== НАЛАШТУВАННЯ =====================
 
 const CONFIG = {
+  // ОФІЦІЙНИЙ API-ключ Нової Пошти (кабінет -> Налаштування -> Безпека -> Мої ключі API).
+  // Береться зі змінної середовища NP_API_KEY (GitHub Secrets).
+  // Якщо ключ заданий - використовується він (передається в тілі запиту як apiKey),
+  // а token/deviceCode нижче ігноруються. Якщо не заданий - працює як раніше через token.
+  // НЕ вписуйте ключ прямо в код: репозиторій публічний.
+  apiKey: process.env.NP_API_KEY || "",
+
   // JWT-токен з кабінету new.novaposhta.ua (Headers -> token)
   // Береться зі змінної середовища NP_TOKEN (GitHub Secrets) або,
   // якщо запускаєте локально, впишіть значення прямо тут замість process.env.NP_TOKEN
@@ -73,7 +80,10 @@ async function fetchAllOutgoingDocuments() {
   const limit = 100;
 
   while (true) {
+    const useApiKey = Boolean(CONFIG.apiKey);
+
     const body = {
+      ...(useApiKey ? { apiKey: CONFIG.apiKey } : {}),
       system: "PA 3.0",
       modelName: "InternetDocument",
       calledMethod: "getOutgoingDocumentsByPhone",
@@ -87,14 +97,16 @@ async function fetchAllOutgoingDocuments() {
       },
     };
 
+    const headers = { "Content-Type": "application/json" };
+    if (!useApiKey) {
+      headers.token = CONFIG.token;
+      headers.DeviceCode = CONFIG.deviceCode;
+      headers.Referer = "https://new.novaposhta.ua/";
+    }
+
     const response = await fetch(CONFIG.apiUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        token: CONFIG.token,
-        DeviceCode: CONFIG.deviceCode,
-        Referer: "https://new.novaposhta.ua/",
-      },
+      headers,
       body: JSON.stringify(body),
     });
 
@@ -108,11 +120,12 @@ async function fetchAllOutgoingDocuments() {
       const isAuthError =
         errText.includes("User is undefined") ||
         errText.includes("Користувач не визначений") ||
+        /api key/i.test(errText) ||
         response.status === 401;
 
       if (isAuthError && CONFIG.telegram.enabled) {
         await sendTelegramMessage(
-          `🔴 <b>Помилка авторизації Нової Пошти</b>\n\nToken/DeviceCode більше не діють. Потрібно оновити їх вручну через DevTools (new.novaposhta.ua).\n\nПомилка API: ${escapeHtml(
+          `🔴 <b>Помилка авторизації Нової Пошти</b>\n\nAPI-ключ / Token не діють. Перевірте ключ у кабінеті (Налаштування → Безпека → Мої ключі API) і оновіть секрет NP_API_KEY у GitHub.\n\nПомилка API: ${escapeHtml(
             errText
           )}`
         );
