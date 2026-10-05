@@ -20,7 +20,6 @@ jobs:
 
       - name: Run duplicate check
         env:
-          NP_API_KEY: ${{ secrets.NP_API_KEY }}
           NP_TOKEN: ${{ secrets.NP_TOKEN }}
           NP_DEVICE_CODE: ${{ secrets.NP_DEVICE_CODE }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
