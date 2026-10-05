@@ -2,7 +2,7 @@ name: Nova Poshta Duplicates Check
 
 on:
   schedule:
-    - cron: "10 14 * * *"   # 17:10 за Києвом (літо, UTC+3)
+    - cron: "0 17 * * *"   # Щодня о 17:00 за Києвом, з урахуванням літнього/зимового часу
       timezone: "Europe/Kyiv"
   workflow_dispatch: # дозволяє запустити вручну кнопкою "Run workflow" на GitHub
 

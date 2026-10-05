@@ -23,9 +23,9 @@ const CONFIG = {
   // Збережіть його в GitHub Secrets як NP_DEVICE_CODE.
   deviceCode: process.env.NP_DEVICE_CODE || "ВАШ_DEVICE_CODE_СЮДИ",
 
-  // За скільки днів назад перевіряти (2 = сьогодні + 2 попередні дні,
-  // тобто якщо сьогодні 02.07, перевіряються 30.06, 01.07, 02.07)
-  daysBack: 2,
+  // 1 = сьогодні та вчора за київським часом.
+  daysBack: 1,
+  timeZone: "Europe/Kyiv",
 
   // Поріг "підозрілості" в годинах: якщо 2 накладні з однаковими
   // ознаками створені в межах цього інтервалу - вважаємо дублікатом
@@ -49,13 +49,23 @@ const CONFIG = {
 function formatDateForApi(date, endOfDay = false) {
   const pad = (n) => String(n).padStart(2, "0");
   const time = endOfDay ? "23:59:59" : "00:00:00";
-  return `${pad(date.getDate())}.${pad(date.getMonth() + 1)}.${date.getFullYear()} ${time}`;
+  return `${pad(date.getUTCDate())}.${pad(date.getUTCMonth() + 1)}.${date.getUTCFullYear()} ${time}`;
 }
 
-function buildDateRange(daysBack) {
-  const to = new Date();
-  const from = new Date();
-  from.setDate(from.getDate() - daysBack);
+function buildDateRange(daysBack, now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: CONFIG.timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+  const { year, month, day } = Object.fromEntries(
+    parts.map(({ type, value }) => [type, value])
+  );
+  // UTC тут потрібен лише для арифметики календарних дат, без впливу часової зони сервера.
+  const to = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  const from = new Date(to);
+  from.setUTCDate(from.getUTCDate() - daysBack);
   return {
     // DateFrom - початок дня N днів тому
     DateFrom: formatDateForApi(from, false),
@@ -63,6 +73,10 @@ function buildDateRange(daysBack) {
     // інакше API відсікає всі накладні, створені сьогодні після півночі
     DateTo: formatDateForApi(to, true),
   };
+}
+
+function formatReportPeriod({ DateFrom, DateTo }) {
+  return `${DateFrom.slice(0, 10)} - ${DateTo.slice(0, 10)} (Київ)`;
 }
 
 function isConfigured(value, placeholder) {
@@ -117,10 +131,10 @@ async function parseJsonResponse(response) {
 
 // ===================== ОТРИМАННЯ НАКЛАДНИХ =====================
 
-async function fetchAllOutgoingDocuments() {
+async function fetchAllOutgoingDocuments(dateRange = buildDateRange(CONFIG.daysBack)) {
   assertNovaPoshtaAuthConfigured();
 
-  const { DateFrom, DateTo } = buildDateRange(CONFIG.daysBack);
+  const { DateFrom, DateTo } = dateRange;
   let allDocs = [];
   let page = 1;
   const limit = 100;
@@ -128,6 +142,7 @@ async function fetchAllOutgoingDocuments() {
   while (true) {
     if (page === 1) {
       console.log("Авторизація: token + DeviceCode з браузерного запиту new.novaposhta.ua");
+      console.log(`Період перевірки: ${DateFrom} - ${DateTo} (Київ)`);
     }
 
     const body = {
@@ -320,14 +335,16 @@ function escapeHtml(str) {
     .replace(/>/g, "&gt;");
 }
 
-function buildTelegramMessage(duplicates, totalChecked) {
-  const today = new Date().toLocaleDateString("uk-UA");
+function buildTelegramMessage(duplicates, totalChecked, dateRange = buildDateRange(CONFIG.daysBack)) {
+  const today = dateRange.DateTo.slice(0, 10);
+  const period = formatReportPeriod(dateRange);
 
   if (duplicates.length === 0) {
-    return `✅ <b>Перевірка дублікатів (${today})</b>\n\nПеревірено накладних: ${totalChecked}\nДублікатів не знайдено.`;
+    return `✅ <b>Перевірка дублікатів (${today})</b>\n\nПеріод: ${period}\nПеревірено накладних: ${totalChecked}\nДублікатів не знайдено.`;
   }
 
   let msg = `⚠️ <b>Перевірка дублікатів (${today})</b>\n\n`;
+  msg += `Період: ${period}\n`;
   msg += `Перевірено накладних: ${totalChecked}\n`;
   msg += `Знайдено підозрілих пар: <b>${duplicates.length}</b>\n\n`;
 
@@ -386,8 +403,9 @@ async function sendTelegramMessage(text) {
 
 // ===================== HTML-ЗВІТ =====================
 
-function generateHtmlReport(duplicates, totalChecked) {
-  const today = new Date().toLocaleString("uk-UA");
+function generateHtmlReport(duplicates, totalChecked, dateRange = buildDateRange(CONFIG.daysBack)) {
+  const today = new Date().toLocaleString("uk-UA", { timeZone: CONFIG.timeZone });
+  const period = formatReportPeriod(dateRange);
 
   const rows = duplicates
     .map(
@@ -448,6 +466,7 @@ function generateHtmlReport(duplicates, totalChecked) {
   <h1>Звіт перевірки дублікатів накладних</h1>
   <div class="summary">
     Дата перевірки: ${today}<br>
+    Період: ${period}<br>
     Перевірено накладних: ${totalChecked}<br>
     Знайдено підозрілих пар: <b>${duplicates.length}</b>
   </div>
@@ -472,27 +491,33 @@ function generateHtmlReport(duplicates, totalChecked) {
 
 // ===================== ЗАПУСК =====================
 
-(async function main() {
-  try {
-    await run();
-  } catch (e) {
+if (require.main === module) {
+  run().catch((e) => {
     console.error(e.message);
-    process.exit(1);
-  }
-})();
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  buildDateRange,
+  buildTelegramMessage,
+  fetchAllOutgoingDocuments,
+  findDuplicates,
+};
 
 async function run() {
   console.log("Завантаження накладних...");
-  const documents = await fetchAllOutgoingDocuments();
+  const dateRange = buildDateRange(CONFIG.daysBack);
+  const documents = await fetchAllOutgoingDocuments(dateRange);
   console.log(`Отримано ${documents.length} накладних.`);
 
   const duplicates = findDuplicates(documents);
   printReport(duplicates, documents.length);
 
-  generateHtmlReport(duplicates, documents.length);
+  generateHtmlReport(duplicates, documents.length, dateRange);
 
   if (CONFIG.telegram.enabled) {
-    const message = buildTelegramMessage(duplicates, documents.length);
+    const message = buildTelegramMessage(duplicates, documents.length, dateRange);
     await sendTelegramMessage(message);
   }
 }
