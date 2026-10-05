@@ -14,19 +14,13 @@ const fs = require("fs");
 // ===================== НАЛАШТУВАННЯ =====================
 
 const CONFIG = {
-  // ОФІЦІЙНИЙ API-ключ Нової Пошти (кабінет -> Налаштування -> Безпека -> Мої ключі API).
-  // Береться зі змінної середовища NP_API_KEY (GitHub Secrets).
-  // Якщо ключ заданий - використовується він (передається в тілі запиту як apiKey),
-  // а token/deviceCode нижче ігноруються. Якщо не заданий - працює як раніше через token.
-  // НЕ вписуйте ключ прямо в код: репозиторій публічний.
-  apiKey: process.env.NP_API_KEY || "",
-
-  // JWT-токен з кабінету new.novaposhta.ua (Headers -> token)
-  // Береться зі змінної середовища NP_TOKEN (GitHub Secrets) або,
-  // якщо запускаєте локально, впишіть значення прямо тут замість process.env.NP_TOKEN
+  // JWT-токен з браузерного запиту new.novaposhta.ua (Headers -> token).
+  // Збережіть його в GitHub Secrets як NP_TOKEN. Не вписуйте токен прямо в код:
+  // репозиторій може бути публічним, а JWT дає доступ до кабінету.
   token: process.env.NP_TOKEN || "ВАШ_ТОКЕН_СЮДИ",
 
-  // DeviceCode з того ж запиту (Headers -> DeviceCode)
+  // DeviceCode з того ж браузерного запиту (Headers -> DeviceCode).
+  // Збережіть його в GitHub Secrets як NP_DEVICE_CODE.
   deviceCode: process.env.NP_DEVICE_CODE || "ВАШ_DEVICE_CODE_СЮДИ",
 
   // За скільки днів назад перевіряти (2 = сьогодні + 2 попередні дні,
@@ -71,22 +65,72 @@ function buildDateRange(daysBack) {
   };
 }
 
+function isConfigured(value, placeholder) {
+  return Boolean(value && value !== placeholder);
+}
+
+function assertNovaPoshtaAuthConfigured() {
+  const hasToken = isConfigured(CONFIG.token, "ВАШ_ТОКЕН_СЮДИ");
+  const hasDeviceCode = isConfigured(CONFIG.deviceCode, "ВАШ_DEVICE_CODE_СЮДИ");
+
+  if (hasToken && hasDeviceCode) return;
+
+  throw new Error(
+    "Не задано NP_TOKEN або NP_DEVICE_CODE. Візьміть їх зі свіжого браузерного request на new.novaposhta.ua і додайте в GitHub Secrets."
+  );
+}
+
+function buildNovaPoshtaHeaders() {
+  return {
+    Accept: "application/json, text/plain, */*",
+    "Accept-Language": "uk-UA,uk;q=0.9,ru-UA;q=0.8,ru;q=0.7,en-US;q=0.6,en;q=0.5",
+    "Content-Type": "application/json",
+    DeviceCode: CONFIG.deviceCode,
+    Origin: "https://new.novaposhta.ua",
+    Referer: "https://new.novaposhta.ua/",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-site",
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36",
+    "sec-ch-ua": '"Chromium";v="154", "Google Chrome";v="154", "Not A(Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    token: CONFIG.token,
+  };
+}
+
+async function parseJsonResponse(response) {
+  const text = await response.text();
+
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    throw new Error(
+      `Нова Пошта повернула не JSON-відповідь. HTTP ${response.status}. Початок відповіді: ${text.slice(
+        0,
+        300
+      )}`
+    );
+  }
+}
+
 // ===================== ОТРИМАННЯ НАКЛАДНИХ =====================
 
 async function fetchAllOutgoingDocuments() {
+  assertNovaPoshtaAuthConfigured();
+
   const { DateFrom, DateTo } = buildDateRange(CONFIG.daysBack);
   let allDocs = [];
   let page = 1;
   const limit = 100;
 
   while (true) {
-    const useApiKey = Boolean(CONFIG.apiKey);
     if (page === 1) {
-      console.log(`Авторизація: ${useApiKey ? "apiKey (NP_API_KEY)" : "token + DeviceCode (NP_TOKEN)"}`);
+      console.log("Авторизація: token + DeviceCode з браузерного запиту new.novaposhta.ua");
     }
 
     const body = {
-      ...(useApiKey ? { apiKey: CONFIG.apiKey } : {}),
       system: "PA 3.0",
       modelName: "InternetDocument",
       calledMethod: "getOutgoingDocumentsByPhone",
@@ -100,20 +144,13 @@ async function fetchAllOutgoingDocuments() {
       },
     };
 
-    const headers = { "Content-Type": "application/json" };
-    if (!useApiKey) {
-      headers.token = CONFIG.token;
-      headers.DeviceCode = CONFIG.deviceCode;
-      headers.Referer = "https://new.novaposhta.ua/";
-    }
-
     const response = await fetch(CONFIG.apiUrl, {
       method: "POST",
-      headers,
+      headers: buildNovaPoshtaHeaders(),
       body: JSON.stringify(body),
     });
 
-    const json = await response.json();
+    const json = await parseJsonResponse(response);
 
     if (!json.success) {
       const errText = (json.errors || json.translatedErrors || []).join(", ");
@@ -134,7 +171,7 @@ async function fetchAllOutgoingDocuments() {
 
       if (isAuthError && CONFIG.telegram.enabled) {
         await sendTelegramMessage(
-          `🔴 <b>Помилка авторизації Нової Пошти</b>\n\nAPI-ключ / Token не діють. Перевірте ключ у кабінеті (Налаштування → Безпека → Мої ключі API) і оновіть секрет NP_API_KEY у GitHub.\n\nПомилка API: ${escapeHtml(
+          `🔴 <b>Помилка авторизації Нової Пошти</b>\n\nJWT-token / DeviceCode з браузерного request не діють або застаріли. Відкрийте new.novaposhta.ua, візьміть зі свіжого запиту headers <b>token</b> і <b>DeviceCode</b>, потім оновіть GitHub Secrets <b>NP_TOKEN</b> та <b>NP_DEVICE_CODE</b>.\n\nПомилка API: ${escapeHtml(
             errText
           )}`
         );
