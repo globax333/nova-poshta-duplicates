@@ -4,7 +4,17 @@ on:
   schedule:
     - cron: "0 17 * * *"   # Щодня о 17:00 за Києвом, з урахуванням літнього/зимового часу
       timezone: "Europe/Kyiv"
+    - cron: "10,30 17 * * *"   # Резервні спроби, якщо звіт після 17:00 ще не надіслано
+      timezone: "Europe/Kyiv"
   workflow_dispatch: # дозволяє запустити вручну кнопкою "Run workflow" на GitHub
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: nova-poshta-duplicates
+  cancel-in-progress: false
 
 jobs:
   check-duplicates:
@@ -24,6 +34,7 @@ jobs:
           NP_DEVICE_CODE: ${{ secrets.NP_DEVICE_CODE }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          GH_TOKEN: ${{ github.token }}
         run: node check-duplicates.js
 
       - name: Upload HTML report as artifact

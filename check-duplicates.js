@@ -79,6 +79,72 @@ function formatReportPeriod({ DateFrom, DateTo }) {
   return `${DateFrom.slice(0, 10)} - ${DateTo.slice(0, 10)} (Київ)`;
 }
 
+function getKyivHour(date) {
+  return Number(new Intl.DateTimeFormat("en-GB", {
+    timeZone: CONFIG.timeZone,
+    hour: "2-digit",
+    hourCycle: "h23",
+  }).format(date));
+}
+
+async function shouldRunScheduledCheck(now = new Date()) {
+  if (process.env.GITHUB_EVENT_NAME !== "schedule") return true;
+
+  if (getKyivHour(now) < 17) {
+    console.log("Плановий запуск до 17:00 за Києвом пропущено.");
+    return false;
+  }
+
+  const repository = process.env.GITHUB_REPOSITORY;
+  const token = process.env.GH_TOKEN;
+  if (!repository || !token) {
+    console.warn("Історія GitHub Actions недоступна; перевірку буде виконано.");
+    return true;
+  }
+
+  try {
+    const response = await fetch(
+      `https://api.github.com/repos/${repository}/actions/workflows/check-duplicates.yml/runs?status=success&per_page=100`,
+      {
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "X-GitHub-Api-Version": "2022-11-28",
+        },
+        signal: AbortSignal.timeout(20000),
+      }
+    );
+    if (!response.ok) throw new Error(`GitHub HTTP ${response.status}`);
+
+    const json = await response.json();
+    if (!Array.isArray(json.workflow_runs)) {
+      throw new Error("GitHub не повернув список запусків");
+    }
+
+    const today = buildDateRange(0, now).DateTo.slice(0, 10);
+    const alreadySent = json.workflow_runs.some((run) => {
+      if (
+        String(run.id) === process.env.GITHUB_RUN_ID ||
+        run.status !== "completed" || run.conclusion !== "success" ||
+        !["schedule", "workflow_dispatch"].includes(run.event)
+      ) return false;
+
+      const started = new Date(run.run_started_at);
+      return Number.isFinite(started.getTime()) &&
+        buildDateRange(0, started).DateTo.slice(0, 10) === today &&
+        getKyivHour(started) >= 17;
+    });
+
+    if (alreadySent) {
+      console.log("Звіт за сьогодні після 17:00 уже надіслано; резервну перевірку пропущено.");
+    }
+    return !alreadySent;
+  } catch (error) {
+    console.warn(`Не вдалося перевірити історію запусків: ${error.message}. Перевірку буде виконано.`);
+    return true;
+  }
+}
+
 function isConfigured(value, placeholder) {
   return Boolean(value && value !== placeholder);
 }
@@ -394,11 +460,10 @@ async function sendTelegramMessage(text) {
     }),
   });
   const json = await response.json();
-  if (!json.ok) {
-    console.error("Помилка надсилання в Telegram:", json.description);
-  } else {
-    console.log("Звіт надіслано в Telegram. ✅");
+  if (!response.ok || !json.ok) {
+    throw new Error(`Помилка надсилання в Telegram: ${json.description || `HTTP ${response.status}`}`);
   }
+  console.log("Звіт надіслано в Telegram. ✅");
 }
 
 // ===================== HTML-ЗВІТ =====================
@@ -503,9 +568,13 @@ module.exports = {
   buildTelegramMessage,
   fetchAllOutgoingDocuments,
   findDuplicates,
+  sendTelegramMessage,
+  shouldRunScheduledCheck,
 };
 
 async function run() {
+  if (!(await shouldRunScheduledCheck())) return;
+
   console.log("Завантаження накладних...");
   const dateRange = buildDateRange(CONFIG.daysBack);
   const documents = await fetchAllOutgoingDocuments(dateRange);
