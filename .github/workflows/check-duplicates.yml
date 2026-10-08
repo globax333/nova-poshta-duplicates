@@ -2,10 +2,11 @@ name: Nova Poshta Duplicates Check
 
 on:
   schedule:
-    - cron: "0 17 * * *"   # Щодня о 17:00 за Києвом, з урахуванням літнього/зимового часу
-      timezone: "Europe/Kyiv"
-    - cron: "10,30 17 * * *"   # Резервні спроби, якщо звіт після 17:00 ще не надіслано
-      timezone: "Europe/Kyiv"
+    # Cron у UTC. Ранній запуск готує завдання, скрипт чекає до 17:00 за Києвом.
+    - cron: "7,37 8,9 * * *"
+    # 14:00 UTC = 17:00 влітку; 15:00 UTC = 17:00 взимку.
+    - cron: "0 14,15 * * *"
+    - cron: "10,30 14,15 * * *"
   workflow_dispatch: # дозволяє запустити вручну кнопкою "Run workflow" на GitHub
 
 permissions:
@@ -19,6 +20,7 @@ concurrency:
 jobs:
   check-duplicates:
     runs-on: ubuntu-24.04
+    timeout-minutes: 360
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -38,6 +40,7 @@ jobs:
         run: node check-duplicates.js
 
       - name: Upload HTML report as artifact
+        if: ${{ hashFiles('duplicates-report.html') != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: duplicates-report

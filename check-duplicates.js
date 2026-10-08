@@ -87,6 +87,40 @@ function getKyivHour(date) {
   }).format(date));
 }
 
+function getScheduledWaitMs(date) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: CONFIG.timeZone,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(date);
+  const { hour, minute, second } = Object.fromEntries(
+    parts.map(({ type, value }) => [type, Number(value)])
+  );
+  // Максимум шість годин очікування; старі запуски після півночі пропускаємо.
+  if (hour < 11) return null;
+  const elapsed = ((hour * 60 + minute) * 60 + second) * 1000 + date.getUTCMilliseconds();
+  return Math.max(0, 17 * 3600000 - elapsed);
+}
+
+async function waitForScheduledReport(
+  clock = () => new Date(),
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+) {
+  while (true) {
+    const delay = getScheduledWaitMs(clock());
+    if (delay === null) {
+      console.log("Занадто ранній або застарілий плановий запуск пропущено.");
+      return false;
+    }
+    if (delay === 0) return true;
+
+    console.log(`Завдання готове. Чекаємо до 17:00 за Києвом (${Math.ceil(delay / 60000)} хв).`);
+    await sleep(delay);
+  }
+}
+
 async function shouldRunScheduledCheck(now = new Date()) {
   if (process.env.GITHUB_EVENT_NAME !== "schedule") return true;
 
@@ -103,42 +137,53 @@ async function shouldRunScheduledCheck(now = new Date()) {
   }
 
   try {
-    const response = await fetch(
-      `https://api.github.com/repos/${repository}/actions/workflows/check-duplicates.yml/runs?status=success&per_page=100`,
-      {
+    const githubApi = async (path) => {
+      const response = await fetch(`https://api.github.com/repos/${repository}${path}`, {
         headers: {
           Accept: "application/vnd.github+json",
           Authorization: `Bearer ${token}`,
           "X-GitHub-Api-Version": "2022-11-28",
         },
         signal: AbortSignal.timeout(20000),
-      }
-    );
-    if (!response.ok) throw new Error(`GitHub HTTP ${response.status}`);
+      });
+      if (!response.ok) throw new Error(`GitHub HTTP ${response.status}`);
+      return response.json();
+    };
 
-    const json = await response.json();
+    const json = await githubApi("/actions/workflows/check-duplicates.yml/runs?status=success&per_page=100");
     if (!Array.isArray(json.workflow_runs)) {
       throw new Error("GitHub не повернув список запусків");
     }
 
     const today = buildDateRange(0, now).DateTo.slice(0, 10);
-    const alreadySent = json.workflow_runs.some((run) => {
+    for (const run of json.workflow_runs) {
       if (
         String(run.id) === process.env.GITHUB_RUN_ID ||
         run.status !== "completed" || run.conclusion !== "success" ||
         !["schedule", "workflow_dispatch"].includes(run.event)
-      ) return false;
+      ) continue;
 
-      const started = new Date(run.run_started_at);
-      return Number.isFinite(started.getTime()) &&
-        buildDateRange(0, started).DateTo.slice(0, 10) === today &&
-        getKyivHour(started) >= 17;
-    });
+      const finished = new Date(run.updated_at);
+      if (!Number.isFinite(finished.getTime()) ||
+          buildDateRange(0, finished).DateTo.slice(0, 10) !== today ||
+          getKyivHour(finished) < 17) continue;
 
-    if (alreadySent) {
-      console.log("Звіт за сьогодні після 17:00 уже надіслано; резервну перевірку пропущено.");
+      // Ранній запуск починається до 17:00. Артефакт підтверджує фактичне надсилання звіту.
+      const { artifacts } = await githubApi(`/actions/runs/${run.id}/artifacts?per_page=100`);
+      if (!Array.isArray(artifacts)) throw new Error("GitHub не повернув список звітів");
+      const alreadySent = artifacts.some((artifact) => {
+        const created = new Date(artifact.created_at);
+        return artifact.name === "duplicates-report" &&
+          Number.isFinite(created.getTime()) &&
+          buildDateRange(0, created).DateTo.slice(0, 10) === today &&
+          getKyivHour(created) >= 17;
+      });
+      if (alreadySent) {
+        console.log("Звіт за сьогодні після 17:00 уже надіслано; резервну перевірку пропущено.");
+        return false;
+      }
     }
-    return !alreadySent;
+    return true;
   } catch (error) {
     console.warn(`Не вдалося перевірити історію запусків: ${error.message}. Перевірку буде виконано.`);
     return true;
@@ -568,11 +613,14 @@ module.exports = {
   buildTelegramMessage,
   fetchAllOutgoingDocuments,
   findDuplicates,
+  getScheduledWaitMs,
   sendTelegramMessage,
   shouldRunScheduledCheck,
+  waitForScheduledReport,
 };
 
 async function run() {
+  if (process.env.GITHUB_EVENT_NAME === "schedule" && !(await waitForScheduledReport())) return;
   if (!(await shouldRunScheduledCheck())) return;
 
   console.log("Завантаження накладних...");
